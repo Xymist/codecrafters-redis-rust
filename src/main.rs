@@ -31,8 +31,6 @@ fn bind_and_listen() {
                     };
                 }
 
-                println!("Stream: {:?}", buf);
-
                 stream.write_all(b"+PONG\r\n").unwrap();
                 stream.flush().unwrap();
                 stream.shutdown(Shutdown::Both).unwrap();
