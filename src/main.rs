@@ -5,11 +5,13 @@ use std::{
 };
 
 fn main() {
-    bind_and_listen();
+    let mut args = std::env::args();
+    let port = args.nth(1).unwrap_or("6379".to_string());
+    bind_and_listen(port);
 }
 
-fn bind_and_listen() {
-    let listener = TcpListener::bind("127.0.0.1:6379").unwrap();
+fn bind_and_listen(port: String) {
+    let listener = TcpListener::bind(format!("127.0.0.1:{}", port)).unwrap();
 
     for stream in listener.incoming() {
         match stream {
