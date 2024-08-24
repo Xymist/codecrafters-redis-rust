@@ -1,6 +1,8 @@
+use core::str;
 use std::{
-    io::{Read, Write},
+    io::{self, BufRead, Write},
     net::{Shutdown, TcpListener},
+    time::Duration,
 };
 
 fn main() {
@@ -13,31 +15,64 @@ fn bind_and_listen() {
     for stream in listener.incoming() {
         match stream {
             Ok(mut stream) => {
-                let mut buf = String::new();
-                stream
-                    .set_read_timeout(Some(std::time::Duration::from_millis(100)))
-                    .unwrap();
-
-                loop {
-                    match stream.read_to_string(&mut buf) {
-                        Ok(byte_count) if byte_count > 0 => byte_count,
-                        Ok(_) => {
-                            println!("Received 0 bytes");
-                            break;
-                        }
-                        Err(_) => {
-                            break;
-                        }
-                    };
-                }
-
-                stream.write_all(b"+PONG\r\n").unwrap();
-                stream.flush().unwrap();
-                stream.shutdown(Shutdown::Both).unwrap();
+                handle_connection(&mut stream);
             }
             Err(e) => {
                 println!("error: {}", e);
             }
         }
     }
+}
+
+fn handle_connection(stream: &mut std::net::TcpStream) {
+    let mut agg = String::new();
+    let mut buf = Vec::new();
+    let mut reader = io::BufReader::new(stream.try_clone().unwrap());
+
+    loop {
+        match reader.read_until(b'\n', &mut buf) {
+            Ok(0) => {
+                break;
+            }
+            Ok(n) => {
+                let s = str::from_utf8(&buf[..n]).unwrap();
+                agg.push_str(s);
+                println!("received: {}", s);
+                buf.clear();
+                println!("agg: {}", agg);
+
+                if agg.ends_with("PING\r\n") {
+                    stream.write_all(b"+PONG\r\n").unwrap();
+                    agg.clear();
+                    stream.flush().unwrap();
+                    break;
+                }
+
+                if agg.ends_with("COMMAND\r\n") {
+                    stream.write_all(b"+OK\r\n").unwrap();
+                    agg.clear();
+                    stream.flush().unwrap();
+                    break;
+                }
+
+                if agg.ends_with("QUIT\r\n") {
+                    stream.write_all(b"+OK\r\n").unwrap();
+                    agg.clear();
+                    stream.flush().unwrap();
+                    break;
+                }
+            }
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                println!("would block");
+                continue;
+            }
+            Err(e) => {
+                println!("error: {}", e);
+                continue;
+            }
+        }
+    }
+
+    stream.flush().unwrap();
+    stream.shutdown(Shutdown::Both).unwrap();
 }
