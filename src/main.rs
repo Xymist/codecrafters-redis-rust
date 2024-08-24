@@ -14,9 +14,10 @@ fn bind_and_listen(port: String) {
     let listener = TcpListener::bind(format!("127.0.0.1:{}", port)).unwrap();
 
     for stream in listener.incoming() {
+        println!("new connection");
         match stream {
             Ok(mut stream) => {
-                handle_connection(&mut stream);
+                std::thread::spawn(move || handle_connection(&mut stream));
             }
             Err(e) => {
                 println!("error: {}", e);
@@ -40,21 +41,21 @@ fn handle_connection(stream: &mut std::net::TcpStream) {
                 agg.push_str(s);
                 buf.clear();
 
-                if agg.ends_with("PING\r\n") {
+                if is_ping(&agg) {
                     stream.write_all(b"+PONG\r\n").unwrap();
                     agg.clear();
                     stream.flush().unwrap();
                     continue;
                 }
 
-                if agg.ends_with("COMMAND\r\n") {
+                if is_command(&agg) {
                     stream.write_all(b"+OK\r\n").unwrap();
                     agg.clear();
                     stream.flush().unwrap();
                     continue;
                 }
 
-                if agg.ends_with("QUIT\r\n") {
+                if is_quit(&agg) {
                     stream.write_all(b"+OK\r\n").unwrap();
                     agg.clear();
                     stream.flush().unwrap();
@@ -70,4 +71,16 @@ fn handle_connection(stream: &mut std::net::TcpStream) {
 
     stream.flush().unwrap();
     stream.shutdown(Shutdown::Both).unwrap();
+}
+
+fn is_ping(s: &str) -> bool {
+    s.ends_with("PING\r\n") || s.ends_with("ping\r\n")
+}
+
+fn is_command(s: &str) -> bool {
+    s.ends_with("COMMAND\r\n") || s.ends_with("command\r\n")
+}
+
+fn is_quit(s: &str) -> bool {
+    s.ends_with("QUIT\r\n") || s.ends_with("quit\r\n")
 }
