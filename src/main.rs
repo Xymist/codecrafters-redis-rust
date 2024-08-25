@@ -1,8 +1,25 @@
+mod protocol_parser;
+
 use core::str;
 use std::{
+    fmt::Display,
     io::{self, BufRead, Write},
     net::{Shutdown, TcpListener},
 };
+
+enum Responses {
+    Ok,
+    Pong,
+}
+
+impl Display for Responses {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Responses::Ok => write!(f, "+OK\r\n"),
+            Responses::Pong => write!(f, "+PONG\r\n"),
+        }
+    }
+}
 
 fn main() {
     let mut args = std::env::args();
@@ -42,21 +59,27 @@ fn handle_connection(stream: &mut std::net::TcpStream) {
                 buf.clear();
 
                 if is_ping(&agg) {
-                    stream.write_all(b"+PONG\r\n").unwrap();
+                    stream
+                        .write_all(Responses::Pong.to_string().as_bytes())
+                        .unwrap();
                     agg.clear();
                     stream.flush().unwrap();
                     continue;
                 }
 
                 if is_command(&agg) {
-                    stream.write_all(b"+OK\r\n").unwrap();
+                    stream
+                        .write_all(Responses::Ok.to_string().as_bytes())
+                        .unwrap();
                     agg.clear();
                     stream.flush().unwrap();
                     continue;
                 }
 
                 if is_quit(&agg) {
-                    stream.write_all(b"+OK\r\n").unwrap();
+                    stream
+                        .write_all(Responses::Ok.to_string().as_bytes())
+                        .unwrap();
                     agg.clear();
                     stream.flush().unwrap();
                     continue;
