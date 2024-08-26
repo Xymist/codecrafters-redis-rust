@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+use std::fmt::Display;
+
 const SEPARATOR: &str = "\r\n";
 const SIMPLE_STRING_PREFIX: char = '+';
 const SIMPLE_ERROR_PREFIX: char = '-';
@@ -16,8 +18,40 @@ const MAP_PREFIX: char = '%';
 const SET_PREFIX: char = '~';
 const PUSH_PREFIX: char = '>';
 
+pub enum Command {
+    Ping,
+    Echo(String),
+    Command,
+}
+
+impl Command {
+    pub fn into_response(self) -> Response {
+        match self {
+            Command::Ping => Response::Pong,
+            Command::Echo(s) => Response::Echo(s),
+            Command::Command => Response::Ok,
+        }
+    }
+}
+
+pub enum Response {
+    Ok,
+    Pong,
+    Echo(String),
+}
+
+impl Display for Response {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Response::Ok => write!(f, "+OK\r\n"),
+            Response::Pong => write!(f, "+PONG\r\n"),
+            Response::Echo(s) => write!(f, "+{}\r\n", s),
+        }
+    }
+}
+
 #[derive(Debug, PartialEq)]
-enum RESPValue {
+pub enum RESPValue {
     SimpleString(String),
     Error(String),
     Integer(i64),
@@ -25,12 +59,45 @@ enum RESPValue {
     Array(Vec<RESPValue>),
 }
 
-fn parse_input(input: &str) -> Vec<RESPValue> {
+impl RESPValue {
+    pub fn into_command(self) -> Command {
+        match self {
+            RESPValue::SimpleString(command) => match command.as_str() {
+                "PING" => Command::Ping,
+                "COMMAND" => Command::Command,
+                _ => unimplemented!(),
+            },
+            RESPValue::Array(values) => {
+                let mut iter = values.into_iter();
+                let first = iter.next().unwrap();
+
+                match first {
+                    RESPValue::BulkString(command) => match command.to_ascii_uppercase().as_str() {
+                        "ECHO" => {
+                            let args = iter.map(|v| match v {
+                                RESPValue::BulkString(s) => s,
+                                _ => unimplemented!(),
+                            });
+
+                            Command::Echo(args.collect())
+                        }
+                        "PING" => Command::Ping,
+                        "COMMAND" => Command::Command,
+                        _ => unimplemented!(),
+                    },
+                    _ => unimplemented!(),
+                }
+            }
+            _ => unimplemented!(),
+        }
+    }
+}
+
+pub fn parse_input(input: &str) -> Vec<RESPValue> {
     let mut parts = input.split(SEPARATOR).peekable();
     let mut values = Vec::new();
 
     while parts.peek().is_some() && !parts.peek().unwrap().is_empty() {
-        println!("part: {:?}", parts.peek());
         values.push(parse_input_segments(&mut parts));
     }
 
@@ -39,7 +106,6 @@ fn parse_input(input: &str) -> Vec<RESPValue> {
 
 fn parse_input_segments<'a>(parts: &mut impl Iterator<Item = &'a str>) -> RESPValue {
     let mut chars = parts.next().unwrap().chars();
-    println!("chars: {:?}", chars);
     let prefix = chars.next().unwrap();
     let rest = chars.as_str();
 

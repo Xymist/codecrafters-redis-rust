@@ -2,24 +2,11 @@ mod protocol_parser;
 
 use core::str;
 use std::{
-    fmt::Display,
-    io::{self, BufRead, Write},
+    io::{self, Read, Write},
     net::{Shutdown, TcpListener},
 };
 
-enum Responses {
-    Ok,
-    Pong,
-}
-
-impl Display for Responses {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Responses::Ok => write!(f, "+OK\r\n"),
-            Responses::Pong => write!(f, "+PONG\r\n"),
-        }
-    }
-}
+use protocol_parser::parse_input;
 
 fn main() {
     let mut args = std::env::args();
@@ -44,46 +31,45 @@ fn bind_and_listen(port: String) {
 }
 
 fn handle_connection(stream: &mut std::net::TcpStream) {
+    const BUFFER_SIZE: usize = 10;
     let mut agg = String::new();
-    let mut buf = Vec::new();
+    let mut buf = [0; BUFFER_SIZE];
+    stream.set_nonblocking(true).unwrap();
     let mut reader = io::BufReader::new(stream.try_clone().unwrap());
 
     loop {
-        match reader.read_until(b'\n', &mut buf) {
-            Ok(0) => {
+        match reader.read(&mut buf) {
+            // This is the last segment, either a partial buffer or
+            // completely empty if the last full buffer was a perfect fit.
+            Ok(n) if n < BUFFER_SIZE => {
+                let s = str::from_utf8(&buf[..n]).unwrap();
+                agg.push_str(s);
+                println!("agg: {:?}", agg);
+                let commands = parse_input(&agg);
+                for command in commands {
+                    let response = command.into_command().into_response();
+                    stream.write_all(response.to_string().as_bytes()).unwrap();
+                }
+                agg.clear();
+
                 break;
             }
+            // This is a full buffer, we need to keep reading.
             Ok(n) => {
                 let s = str::from_utf8(&buf[..n]).unwrap();
                 agg.push_str(s);
-                buf.clear();
-
-                if is_ping(&agg) {
-                    stream
-                        .write_all(Responses::Pong.to_string().as_bytes())
-                        .unwrap();
-                    agg.clear();
-                    stream.flush().unwrap();
-                    continue;
+                buf.fill(0);
+            }
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                println!("agg: {:?}", agg);
+                let commands = parse_input(&agg);
+                for command in commands {
+                    let response = command.into_command().into_response();
+                    stream.write_all(response.to_string().as_bytes()).unwrap();
                 }
+                agg.clear();
 
-                if is_command(&agg) {
-                    stream
-                        .write_all(Responses::Ok.to_string().as_bytes())
-                        .unwrap();
-                    agg.clear();
-                    stream.flush().unwrap();
-                    continue;
-                }
-
-                if is_quit(&agg) {
-                    stream
-                        .write_all(Responses::Ok.to_string().as_bytes())
-                        .unwrap();
-                    agg.clear();
-                    stream.flush().unwrap();
-                    continue;
-                }
+                break;
             }
             Err(e) => {
                 println!("error: {}", e);
@@ -94,16 +80,4 @@ fn handle_connection(stream: &mut std::net::TcpStream) {
 
     stream.flush().unwrap();
     stream.shutdown(Shutdown::Both).unwrap();
-}
-
-fn is_ping(s: &str) -> bool {
-    s.ends_with("PING\r\n") || s.ends_with("ping\r\n")
-}
-
-fn is_command(s: &str) -> bool {
-    s.ends_with("COMMAND\r\n") || s.ends_with("command\r\n")
-}
-
-fn is_quit(s: &str) -> bool {
-    s.ends_with("QUIT\r\n") || s.ends_with("quit\r\n")
 }
