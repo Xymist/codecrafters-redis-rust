@@ -1,16 +1,22 @@
 mod protocol_parser;
 
 use core::str;
+use protocol_parser::{parse_input, RESPValue};
 use std::{
+    collections::HashMap,
     io::{self, Read, Write},
     net::{Shutdown, TcpListener},
+    sync::{Mutex, OnceLock},
 };
 
-use protocol_parser::parse_input;
+static DB: OnceLock<Mutex<HashMap<String, RESPValue>>> = OnceLock::new();
 
 fn main() {
     let mut args = std::env::args();
     let port = args.nth(1).unwrap_or("6379".to_string());
+
+    DB.get_or_init(|| Mutex::new(HashMap::new()));
+
     bind_and_listen(port);
 }
 
@@ -50,9 +56,11 @@ fn handle_connection(stream: &mut std::net::TcpStream) {
                 let s = str::from_utf8(&buf[..n]).unwrap();
                 agg.push_str(s);
                 println!("agg: {:?}", agg);
-                let commands = parse_input(&agg);
-                for command in commands {
-                    let response = command.into_command().into_response();
+                let inputs = parse_input(&agg);
+                for input in inputs {
+                    let command = input.into_command();
+                    command.execute();
+                    let response = command.into_response();
                     stream.write_all(response.to_string().as_bytes()).unwrap();
                 }
                 agg.clear();
@@ -72,4 +80,15 @@ fn handle_connection(stream: &mut std::net::TcpStream) {
 
     stream.flush().unwrap();
     stream.shutdown(Shutdown::Both).unwrap();
+}
+
+fn db_set(key: String, value: RESPValue) {
+    let mut guard = DB.get().unwrap().lock().unwrap();
+    guard.insert(key, value);
+    println!("DB contents: {:?}", guard);
+}
+
+fn db_get(key: String) -> Option<RESPValue> {
+    let guard = DB.get().unwrap().lock().unwrap();
+    guard.get(&key).cloned()
 }

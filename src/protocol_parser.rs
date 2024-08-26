@@ -20,8 +20,14 @@ const PUSH_PREFIX: char = '>';
 
 pub enum Command {
     Ping,
-    Echo(String),
+    Echo(RESPValue),
+    #[allow(clippy::enum_variant_names)]
     Command,
+    Set {
+        key: String,
+        value: RESPValue,
+    },
+    Get(String),
 }
 
 impl Command {
@@ -30,14 +36,39 @@ impl Command {
             Command::Ping => Response::Pong,
             Command::Echo(s) => Response::Echo(s),
             Command::Command => Response::Ok,
+            Command::Set { key: _, value: _ } => Response::Ok,
+            Command::Get(key) => {
+                let res = super::db_get(key.clone());
+                match res {
+                    Some(value) => dbg!(Response::Echo(value)),
+                    None => Response::Null,
+                }
+            }
+        }
+    }
+
+    pub fn execute(&self) {
+        match self {
+            Command::Ping => println!("PONG"),
+            Command::Echo(s) => println!("{}", s),
+            Command::Command => println!("COMMAND"),
+            Command::Set { key, value } => {
+                println!("SET {} {:?}", key, value);
+                super::db_set(key.clone(), value.clone());
+            }
+            Command::Get(key) => {
+                println!("GET {}", key);
+            }
         }
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
 pub enum Response {
     Ok,
     Pong,
-    Echo(String),
+    Echo(RESPValue),
+    Null,
 }
 
 impl Display for Response {
@@ -45,18 +76,37 @@ impl Display for Response {
         match self {
             Response::Ok => write!(f, "+OK\r\n"),
             Response::Pong => write!(f, "+PONG\r\n"),
-            Response::Echo(s) => write!(f, "+{}\r\n", s),
+            Response::Echo(s) => write!(f, "{}", s),
+            Response::Null => write!(f, "$-1\r\n"),
         }
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum RESPValue {
     SimpleString(String),
     Error(String),
     Integer(i64),
     BulkString(String),
     Array(Vec<RESPValue>),
+}
+
+impl Display for RESPValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RESPValue::SimpleString(s) => write!(f, "+{}\r\n", s),
+            RESPValue::Error(s) => write!(f, "-{}\r\n", s),
+            RESPValue::Integer(i) => write!(f, ":{}\r\n", i),
+            RESPValue::BulkString(s) => write!(f, "${}\r\n{}\r\n", s.len(), s),
+            RESPValue::Array(values) => {
+                write!(f, "*{}\r\n", values.len())?;
+                for value in values {
+                    write!(f, "{}", value)?;
+                }
+                Ok(())
+            }
+        }
+    }
 }
 
 impl RESPValue {
@@ -73,16 +123,26 @@ impl RESPValue {
 
                 match first {
                     RESPValue::BulkString(command) => match command.to_ascii_uppercase().as_str() {
-                        "ECHO" => {
-                            let args = iter.map(|v| match v {
-                                RESPValue::BulkString(s) => s,
-                                _ => unimplemented!(),
-                            });
-
-                            Command::Echo(args.collect())
-                        }
+                        "ECHO" => Command::Echo(iter.next().unwrap()),
                         "PING" => Command::Ping,
                         "COMMAND" => Command::Command,
+                        "SET" => {
+                            let key = match iter.next().unwrap() {
+                                RESPValue::BulkString(s) => s,
+                                _ => unimplemented!(),
+                            };
+                            let value = iter.next().unwrap();
+
+                            Command::Set { key, value }
+                        }
+                        "GET" => {
+                            let key = match iter.next().unwrap() {
+                                RESPValue::BulkString(s) => s,
+                                _ => unimplemented!(),
+                            };
+
+                            Command::Get(key)
+                        }
                         _ => unimplemented!(),
                     },
                     _ => unimplemented!(),
