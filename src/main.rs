@@ -32,13 +32,56 @@ impl DBEntry {
 // from the keyspace.
 static DB: OnceLock<Mutex<HashMap<String, DBEntry>>> = OnceLock::new();
 
+static CONFIG: OnceLock<Args> = OnceLock::new();
+
+struct Args {
+    port: String,
+    directory: String,
+    dbfilename: String,
+}
+
+impl Default for Args {
+    fn default() -> Self {
+        Args {
+            port: "6379".to_string(),
+            directory: ".".to_string(),
+            dbfilename: "dump.rdb".to_string(),
+        }
+    }
+}
+
 fn main() {
     let mut args = std::env::args();
-    let port = args.nth(1).unwrap_or("6379".to_string());
 
+    // Ignore the first argument, which is the binary name.
+    let _ = args.next();
+
+    let (flags, vals): (Vec<String>, Vec<String>) = args.partition(|arg| arg.starts_with("--"));
+    let parsed_args = flags
+        .into_iter()
+        .zip(vals)
+        .fold(Args::default(), |mut parsed_args, arg| {
+            let key = arg.0;
+            let value = arg.1;
+            match key.as_str() {
+                "--port" => parsed_args.port = value.to_string(),
+                "--dir" => parsed_args.directory = value.to_string(),
+                "--dbfilename" => parsed_args.dbfilename = value.to_string(),
+                other => panic!("Unknown flag: {}", other),
+            }
+            parsed_args
+        });
+
+    CONFIG.get_or_init(|| parsed_args);
     DB.get_or_init(|| Mutex::new(HashMap::new()));
 
-    bind_and_listen(port);
+    bind_and_listen(
+        CONFIG
+            .get()
+            .expect("Selected port did not exist")
+            .port
+            .clone(),
+    );
 }
 
 fn bind_and_listen(port: String) {
@@ -135,5 +178,13 @@ fn db_get(key: String) -> Option<RESPValue> {
         Some(entry.value)
     } else {
         None
+    }
+}
+
+fn config_get(key: String) -> Option<String> {
+    match key.as_str() {
+        "dir" => Some(CONFIG.get().unwrap().directory.clone()),
+        "dbfilename" => Some(CONFIG.get().unwrap().dbfilename.clone()),
+        _ => None,
     }
 }

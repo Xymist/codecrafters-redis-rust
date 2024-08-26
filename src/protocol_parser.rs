@@ -63,6 +63,7 @@ pub enum Command {
         opts: SetOpts,
     },
     Get(String),
+    ConfigGet(String),
 }
 
 impl Command {
@@ -93,6 +94,16 @@ impl Command {
                     None => Response::Null,
                 }
             }
+            Command::ConfigGet(key) => {
+                let res = super::config_get(key.clone());
+                match res {
+                    Some(value) => Response::Echo(RESPValue::Array(vec![
+                        RESPValue::BulkString(key.clone()),
+                        RESPValue::BulkString(value),
+                    ])),
+                    None => Response::Null,
+                }
+            }
         }
     }
 
@@ -107,6 +118,9 @@ impl Command {
             }
             Command::Get(key) => {
                 println!("GET {}", key);
+            }
+            Command::ConfigGet(key) => {
+                println!("CONFIG GET {}", key);
             }
         }
     }
@@ -253,6 +267,24 @@ impl RESPValue {
                             };
 
                             Command::Get(key)
+                        }
+                        "CONFIG" => {
+                            let subcommand = match iter.next().unwrap() {
+                                RESPValue::BulkString(s) => s,
+                                _ => unimplemented!(),
+                            };
+
+                            match subcommand.to_ascii_uppercase().as_str() {
+                                "GET" => {
+                                    let key = match iter.next().unwrap() {
+                                        RESPValue::BulkString(s) => s,
+                                        _ => unimplemented!(),
+                                    };
+
+                                    Command::ConfigGet(key)
+                                }
+                                _ => unimplemented!(),
+                            }
                         }
                         _ => unimplemented!(),
                     },
