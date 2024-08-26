@@ -1,15 +1,33 @@
 mod protocol_parser;
 
 use core::str;
-use protocol_parser::{parse_input, RESPValue};
+use protocol_parser::{parse_input, RESPValue, SetCondition, SetOpts};
 use std::{
     collections::HashMap,
     io::{self, Read, Write},
     net::{Shutdown, TcpListener},
     sync::{Mutex, OnceLock},
+    time::SystemTime,
 };
 
-static DB: OnceLock<Mutex<HashMap<String, RESPValue>>> = OnceLock::new();
+#[derive(Debug, Clone, PartialEq)]
+struct DBEntry {
+    value: RESPValue,
+    expires_at: Option<SystemTime>,
+}
+
+impl DBEntry {
+    fn is_expired(&self) -> bool {
+        if let Some(expiry) = self.expires_at {
+            let now = SystemTime::now();
+            now > expiry
+        } else {
+            false
+        }
+    }
+}
+
+static DB: OnceLock<Mutex<HashMap<String, DBEntry>>> = OnceLock::new();
 
 fn main() {
     let mut args = std::env::args();
@@ -82,13 +100,37 @@ fn handle_connection(stream: &mut std::net::TcpStream) {
     stream.shutdown(Shutdown::Both).unwrap();
 }
 
-fn db_set(key: String, value: RESPValue) {
+fn db_set(key: String, value: RESPValue, opts: &SetOpts) {
     let mut guard = DB.get().unwrap().lock().unwrap();
-    guard.insert(key, value);
+    let key_exists = guard.contains_key(&key);
+    let condition = opts.condition();
+
+    if key_exists && *condition == SetCondition::IfNotExists {
+        return;
+    }
+
+    if !key_exists && *condition == SetCondition::IfExists {
+        return;
+    }
+
+    let new_entry = DBEntry {
+        value,
+        expires_at: opts.expires_at(),
+    };
+    guard.insert(key, new_entry);
     println!("DB contents: {:?}", guard);
 }
 
 fn db_get(key: String) -> Option<RESPValue> {
-    let guard = DB.get().unwrap().lock().unwrap();
-    guard.get(&key).cloned()
+    let mut guard = DB.get().unwrap().lock().unwrap();
+    let entry = guard.get(&key).cloned();
+    if let Some(entry) = entry {
+        if entry.is_expired() {
+            guard.remove(&key);
+            return None;
+        }
+        Some(entry.value)
+    } else {
+        None
+    }
 }

@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::fmt::Display;
+use std::{fmt::Display, time::SystemTime};
 
 const SEPARATOR: &str = "\r\n";
 const SIMPLE_STRING_PREFIX: char = '+';
@@ -18,6 +18,40 @@ const MAP_PREFIX: char = '%';
 const SET_PREFIX: char = '~';
 const PUSH_PREFIX: char = '>';
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum SetCondition {
+    IfExists,
+    IfNotExists,
+    Always,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SetOpts {
+    expires_at: Option<SystemTime>,
+    condition: SetCondition,
+    keep_ttl: bool,
+    get: bool,
+}
+
+impl SetOpts {
+    pub fn expires_at(&self) -> Option<SystemTime> {
+        self.expires_at
+    }
+
+    pub fn condition(&self) -> &SetCondition {
+        &self.condition
+    }
+
+    pub fn keep_ttl(&self) -> bool {
+        self.keep_ttl
+    }
+
+    pub fn get(&self) -> bool {
+        self.get
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum Command {
     Ping,
     Echo(RESPValue),
@@ -26,6 +60,7 @@ pub enum Command {
     Set {
         key: String,
         value: RESPValue,
+        opts: SetOpts,
     },
     Get(String),
 }
@@ -36,11 +71,25 @@ impl Command {
             Command::Ping => Response::Pong,
             Command::Echo(s) => Response::Echo(s),
             Command::Command => Response::Ok,
-            Command::Set { key: _, value: _ } => Response::Ok,
+            Command::Set {
+                key,
+                value: _,
+                opts,
+            } => {
+                if opts.get {
+                    let res = super::db_get(key.clone());
+                    match res {
+                        Some(value) => Response::Echo(value),
+                        None => Response::Null,
+                    }
+                } else {
+                    Response::Ok
+                }
+            }
             Command::Get(key) => {
                 let res = super::db_get(key.clone());
                 match res {
-                    Some(value) => dbg!(Response::Echo(value)),
+                    Some(value) => Response::Echo(value),
                     None => Response::Null,
                 }
             }
@@ -52,9 +101,9 @@ impl Command {
             Command::Ping => println!("PONG"),
             Command::Echo(s) => println!("{}", s),
             Command::Command => println!("COMMAND"),
-            Command::Set { key, value } => {
+            Command::Set { key, value, opts } => {
                 println!("SET {} {:?}", key, value);
-                super::db_set(key.clone(), value.clone());
+                super::db_set(key.clone(), value.clone(), opts);
             }
             Command::Get(key) => {
                 println!("GET {}", key);
@@ -118,7 +167,7 @@ impl RESPValue {
                 _ => unimplemented!(),
             },
             RESPValue::Array(values) => {
-                let mut iter = values.into_iter();
+                let mut iter = values.into_iter().peekable();
                 let first = iter.next().unwrap();
 
                 match first {
@@ -132,8 +181,70 @@ impl RESPValue {
                                 _ => unimplemented!(),
                             };
                             let value = iter.next().unwrap();
+                            let mut opts = SetOpts {
+                                expires_at: None,
+                                condition: SetCondition::Always,
+                                keep_ttl: false,
+                                get: false,
+                            };
 
-                            Command::Set { key, value }
+                            // EX seconds -- Set the specified expire time, in seconds (a positive integer).
+                            // PX milliseconds -- Set the specified expire time, in milliseconds (a positive integer).
+                            // EXAT timestamp-seconds -- Set the specified Unix time at which the key will expire, in seconds (a positive integer).
+                            // PXAT timestamp-milliseconds -- Set the specified Unix time at which the key will expire, in milliseconds (a positive integer).
+
+                            // NX -- Only set the key if it does not already exist.
+                            // XX -- Only set the key if it already exists.
+
+                            // KEEPTTL -- Retain the time to live associated with the key.
+                            // GET -- Return the old string stored at key, or nil if key did not exist. An error is returned and SET aborted if the value stored at key is not a string.
+
+                            while let Some(val) = iter.next() {
+                                match val {
+                                    RESPValue::BulkString(s) => {
+                                        match s.to_ascii_uppercase().as_str() {
+                                            "EX" => {
+                                                let seconds = match iter.next().unwrap() {
+                                                    RESPValue::BulkString(s) => s.parse().unwrap(),
+                                                    _ => unimplemented!(),
+                                                };
+                                                opts.expires_at = Some(
+                                                    SystemTime::now()
+                                                        + std::time::Duration::from_secs(seconds),
+                                                );
+                                            }
+                                            "PX" => {
+                                                let milliseconds = match iter.next().unwrap() {
+                                                    RESPValue::BulkString(s) => s.parse().unwrap(),
+                                                    _ => unimplemented!(),
+                                                };
+                                                opts.expires_at = Some(
+                                                    SystemTime::now()
+                                                        + std::time::Duration::from_millis(
+                                                            milliseconds,
+                                                        ),
+                                                );
+                                            }
+                                            "NX" => {
+                                                opts.condition = SetCondition::IfNotExists;
+                                            }
+                                            "XX" => {
+                                                opts.condition = SetCondition::IfExists;
+                                            }
+                                            "KEEPTTL" => {
+                                                opts.keep_ttl = true;
+                                            }
+                                            "GET" => {
+                                                opts.get = true;
+                                            }
+                                            _ => unimplemented!(),
+                                        }
+                                    }
+                                    _ => unimplemented!(),
+                                }
+                            }
+
+                            Command::Set { key, value, opts }
                         }
                         "GET" => {
                             let key = match iter.next().unwrap() {
