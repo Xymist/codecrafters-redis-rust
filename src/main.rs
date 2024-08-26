@@ -80,8 +80,8 @@ fn handle_connection(stream: &mut std::net::TcpStream) {
                 let inputs = parse_input(&agg);
                 for input in inputs {
                     let command = input.into_command();
+                    let response = command.as_response();
                     command.execute();
-                    let response = command.into_response();
                     stream.write_all(response.to_string().as_bytes()).unwrap();
                 }
                 agg.clear();

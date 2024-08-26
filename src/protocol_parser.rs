@@ -66,10 +66,10 @@ pub enum Command {
 }
 
 impl Command {
-    pub fn into_response(self) -> Response {
+    pub fn as_response(&self) -> Response {
         match self {
             Command::Ping => Response::Pong,
-            Command::Echo(s) => Response::Echo(s),
+            Command::Echo(s) => Response::Echo(s.clone()),
             Command::Command => Response::Ok,
             Command::Set {
                 key,
