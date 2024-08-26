@@ -27,6 +27,9 @@ impl DBEntry {
     }
 }
 
+// TODO: There are expired keys that will never be accessed again. These keys should be expired anyway, so periodically
+// Redis tests a few keys at random among keys with an expire set. All the keys that are already expired are deleted
+// from the keyspace.
 static DB: OnceLock<Mutex<HashMap<String, DBEntry>>> = OnceLock::new();
 
 fn main() {
