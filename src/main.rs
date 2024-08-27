@@ -1,36 +1,19 @@
 mod protocol_parser;
+mod rdb;
 
 use core::str;
 use protocol_parser::{parse_input, RESPValue, SetCondition, SetOpts};
+use rdb::{DBEntry, Rdb};
 use std::{
-    collections::HashMap,
     io::{self, Read, Write},
     net::{Shutdown, TcpListener},
     sync::{Mutex, OnceLock},
-    time::SystemTime,
 };
-
-#[derive(Debug, Clone, PartialEq)]
-struct DBEntry {
-    value: RESPValue,
-    expires_at: Option<SystemTime>,
-}
-
-impl DBEntry {
-    fn is_expired(&self) -> bool {
-        if let Some(expiry) = self.expires_at {
-            let now = SystemTime::now();
-            now > expiry
-        } else {
-            false
-        }
-    }
-}
 
 // TODO: There are expired keys that will never be accessed again. These keys should be expired anyway, so periodically
 // Redis tests a few keys at random among keys with an expire set. All the keys that are already expired are deleted
 // from the keyspace.
-static DB: OnceLock<Mutex<HashMap<String, DBEntry>>> = OnceLock::new();
+static DB: OnceLock<Mutex<Rdb>> = OnceLock::new();
 
 static CONFIG: OnceLock<Args> = OnceLock::new();
 
@@ -73,15 +56,19 @@ fn main() {
         });
 
     CONFIG.get_or_init(|| parsed_args);
-    DB.get_or_init(|| Mutex::new(HashMap::new()));
 
-    bind_and_listen(
-        CONFIG
-            .get()
-            .expect("Selected port did not exist")
-            .port
-            .clone(),
-    );
+    let existing_data = rdb::load_db();
+    match existing_data {
+        Ok(data) => {
+            DB.get_or_init(|| Mutex::new(data));
+        }
+        Err(e) => {
+            println!("Error loading existing data: {:?}", e);
+            DB.get_or_init(|| Mutex::new(Rdb::default()));
+        }
+    }
+
+    bind_and_listen(crate::args().port.clone());
 }
 
 fn bind_and_listen(port: String) {
@@ -148,7 +135,7 @@ fn handle_connection(stream: &mut std::net::TcpStream) {
 
 fn db_set(key: String, value: RESPValue, opts: &SetOpts) {
     let mut guard = DB.get().unwrap().lock().unwrap();
-    let key_exists = guard.contains_key(&key);
+    let key_exists = guard.data_mut().contains_key(&key);
     let condition = opts.condition();
 
     if key_exists && *condition == SetCondition::IfNotExists {
@@ -159,23 +146,20 @@ fn db_set(key: String, value: RESPValue, opts: &SetOpts) {
         return;
     }
 
-    let new_entry = DBEntry {
-        value,
-        expires_at: opts.expires_at(),
-    };
-    guard.insert(key, new_entry);
+    let new_entry = DBEntry::new(value, opts.expires_at());
+    guard.data_mut().insert(key, new_entry);
     println!("DB contents: {:?}", guard);
 }
 
 fn db_get(key: String) -> Option<RESPValue> {
     let mut guard = DB.get().unwrap().lock().unwrap();
-    let entry = guard.get(&key).cloned();
+    let entry = guard.data_mut().get(&key).cloned();
     if let Some(entry) = entry {
         if entry.is_expired() {
-            guard.remove(&key);
+            guard.data_mut().remove(&key);
             return None;
         }
-        Some(entry.value)
+        Some(entry.value().clone())
     } else {
         None
     }
@@ -183,8 +167,14 @@ fn db_get(key: String) -> Option<RESPValue> {
 
 fn config_get(key: String) -> Option<String> {
     match key.as_str() {
-        "dir" => Some(CONFIG.get().unwrap().directory.clone()),
-        "dbfilename" => Some(CONFIG.get().unwrap().dbfilename.clone()),
+        "dir" => Some(args().directory.clone()),
+        "dbfilename" => Some(args().dbfilename.clone()),
         _ => None,
     }
+}
+
+fn args() -> &'static Args {
+    CONFIG
+        .get()
+        .expect("Args not initialized, did you call this too early?")
 }

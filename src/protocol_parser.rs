@@ -2,6 +2,8 @@
 
 use std::{fmt::Display, time::SystemTime};
 
+use anyhow::{bail, Result};
+
 const SEPARATOR: &str = "\r\n";
 const SIMPLE_STRING_PREFIX: char = '+';
 const SIMPLE_ERROR_PREFIX: char = '-';
@@ -293,6 +295,14 @@ impl RESPValue {
             }
             _ => unimplemented!(),
         }
+    }
+
+    pub fn decode(data: &[u8]) -> Result<RESPValue> {
+        let s = std::str::from_utf8(data)?;
+
+        println!("Decoding: {}", s);
+
+        bail!("Not implemented");
     }
 }
 
