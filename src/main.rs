@@ -88,7 +88,7 @@ fn bind_and_listen(port: String) {
 }
 
 fn handle_connection(stream: &mut std::net::TcpStream) {
-    const BUFFER_SIZE: usize = 10;
+    const BUFFER_SIZE: usize = 1024;
     let mut agg = String::new();
     let mut buf = [0; BUFFER_SIZE];
     let mut reader = io::BufReader::new(stream.try_clone().unwrap());
@@ -148,7 +148,9 @@ fn db_set(key: String, value: RESPValue, opts: &SetOpts) {
 
     let new_entry = DBEntry::new(value, opts.expires_at());
     guard.data_mut().insert(key, new_entry);
-    println!("DB contents: {:?}", guard);
+    if cfg!(debug_assertions) {
+        println!("DB contents: {:?}", guard);
+    }
 }
 
 fn db_get(key: String) -> Option<RESPValue> {
