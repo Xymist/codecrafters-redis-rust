@@ -71,53 +71,85 @@ pub fn load_db() -> Result<Rdb> {
         db_data.version = version.to_string();
     }
 
-    // Fetch the metadata section
-    // FA                             // Indicates the start of a metadata subsection.
-    // 09 72 65 64 69 73 2D 76 65 72  // The name of the metadata attribute (string encoded): "redis-ver".
-    // 06 36 2E 30 2E 31 36           // The value of the metadata attribute (string encoded): "6.0.16".
-    //
-    // There may be zero or more metadata subsections.
-    // Each subsection starts with the byte 0xFA and is followed by a null-terminated string that represents the name of the metadata attribute.
-    // The value of the attribute is also a null-terminated string.
-    // The metadata section is terminated by a null byte.
+    // Begin iterating sections
     loop {
         let mut buf = [0; 1];
         file.read_exact(&mut buf)?;
 
         if buf[0] == 0xFA {
-            // Do a metadata section
-            // We're looking for two strings, each preceded by a length byte,
-            // the latter followed by a b11111010 (250) byte.
+            // Fetch the metadata section
+            // FA                             // Indicates the start of a metadata subsection.
+            // 09 72 65 64 69 73 2D 76 65 72  // The name of the metadata attribute (string encoded): "redis-ver".
+            // 06 36 2E 30 2E 31 36           // The value of the metadata attribute (string encoded): "6.0.16".
+            //
+            // There may be zero or more metadata subsections.
+            // Each subsection starts with the byte 0xFA and is followed by a null-terminated string that represents the name of the metadata attribute.
+            // The value of the attribute is also a null-terminated string.
+            // The metadata section is terminated by a null byte.
+            if cfg!(debug_assertions) {
+                println!("Found metadata section");
+            }
+
             let mut buf = [0; 1];
             file.read_exact(&mut buf)?;
-            let key = extract_value(buf[0], &mut file)?;
+            let key = extract_value(buf[0], &mut file, LengthEncodedKind::String)?;
 
             // Read the next byte, which should be the length of the value
             file.read_exact(&mut buf)?;
-            let value = extract_value(buf[0], &mut file)?;
+            let value = extract_value(buf[0], &mut file, LengthEncodedKind::String)?;
 
             db_data.metadata.insert(key, value);
         } else if buf[0] == 0xFE {
-            // Do a database selector section
+            // Fetch the database selector section
+            // FE <db>, where db is a variable-length integer that represents the selected database.
+            if cfg!(debug_assertions) {
+                println!("Found database selector section");
+            }
             let selected_db = {
                 let mut buf = [0; 1];
                 file.read_exact(&mut buf)?;
-                extract_value(buf[0], &mut file)?
+                extract_value(buf[0], &mut file, LengthEncodedKind::Integer)?
             };
             db_data.selected_db = selected_db.parse().unwrap_or(0);
         } else if buf[0] == 0xFB {
-            // Do a resize database section
+            // Fetch the resize database section
+            // FB <db-size> <expires-size>
+            // db-size is the size of the hash table for the key-value pairs (i.e. the number of entries in the DB).
+            // expires-size is the size of the hash table for the expiry times (i.e. the number of entries in the expiry set).
+
+            if cfg!(debug_assertions) {
+                println!("Found resize database section");
+            }
+
             let mut buf = [0; 1];
 
             file.read_exact(&mut buf)?;
-            let db_size = extract_value(buf[0], &mut file)?;
+            if cfg!(debug_assertions) {
+                println!("DB size length: {}", buf[0]);
+            }
+            let db_size = extract_value(buf[0], &mut file, LengthEncodedKind::Integer)?;
             db_data.db_hash_table_size = db_size.parse().unwrap_or(0);
 
+            if cfg!(debug_assertions) {
+                println!("Database size: {}", db_size);
+            }
+
             file.read_exact(&mut buf)?;
-            let expires_size = extract_value(buf[0], &mut file)?;
+            let expires_size = extract_value(buf[0], &mut file, LengthEncodedKind::Integer)?;
             db_data.expiry_hash_table_size = expires_size.parse().unwrap_or(0);
+
+            if cfg!(debug_assertions) {
+                println!("Expiry size: {}", expires_size);
+            }
         } else if buf[0] == 0xFF {
-            // End of file. Read an eight-byte checksum and we're done.
+            // Fetch the end of file checksum section
+            // FF <checksum>
+            // checksum is an 8-byte integer that represents the CRC checksum of the entire RDB file.
+            // NOTE: Redis does not use the standard CRC64-ECMA or ISO, but a special "Jones" variant instead.
+            if cfg!(debug_assertions) {
+                println!("Found end of file checksum section");
+            }
+
             let mut buf = [0; 8];
             file.read_exact(&mut buf)?;
             let checksum = u64::from_le_bytes(buf);
@@ -125,6 +157,16 @@ pub fn load_db() -> Result<Rdb> {
 
             break;
         } else {
+            if cfg!(debug_assertions) {
+                println!("Found data section");
+            }
+            let data_type = extract_datatype(buf[0]);
+            if cfg!(debug_assertions) {
+                println!("Data type: {}", data_type);
+            }
+
+            file.read_exact(&mut buf)?;
+
             let expiry = match buf[0] {
                 0xFD => {
                     let mut buf = [0; 4];
@@ -158,16 +200,24 @@ pub fn load_db() -> Result<Rdb> {
                     buf[0]
                 };
 
-                extract_value(key_start_byte, &mut file)?
+                extract_value(key_start_byte, &mut file, LengthEncodedKind::String)?
             };
+
+            if cfg!(debug_assertions) {
+                println!("Key: {}", key);
+            }
 
             let value = {
                 let mut buf = [0; 1];
                 file.read_exact(&mut buf)?;
-                let value = extract_value(buf[0], &mut file)?;
+                let value = extract_value(buf[0], &mut file, LengthEncodedKind::String)?;
                 // TODO: not everything is a string, this needs correcting
                 RESPValue::SimpleString(value)
             };
+
+            if cfg!(debug_assertions) {
+                println!("Value: {}", value);
+            }
 
             db_data.data.insert(key, DBEntry::new(value, expiry));
         }
@@ -179,8 +229,41 @@ pub fn load_db() -> Result<Rdb> {
     Ok(db_data)
 }
 
-// Incredibly stupid fucking encoding for how long the next
-// item is which requires special handling.
+// 0 = String Encoding
+// 1 = List Encoding
+// 2 = Set Encoding
+// 3 = Sorted Set Encoding
+// 4 = Hash Encoding
+// 9 = Zipmap Encoding
+// 10 = Ziplist Encoding
+// 11 = Intset Encoding
+// 12 = Sorted Set in Ziplist Encoding
+// 13 = Hashmap in Ziplist Encoding (Introduced in RDB version 4)
+// 14 = List in Quicklist encoding (Introduced in RDB version 7)
+fn extract_datatype(byte: u8) -> &'static str {
+    match byte {
+        0 => "String Encoding",
+        1 => "List Encoding",
+        2 => "Set Encoding",
+        3 => "Sorted Set Encoding",
+        4 => "Hash Encoding",
+        9 => "Zipmap Encoding",
+        10 => "Ziplist Encoding",
+        11 => "Intset Encoding",
+        12 => "Sorted Set in Ziplist Encoding",
+        13 => "Hashmap in Ziplist Encoding",
+        14 => "List in Quicklist encoding",
+        _ => "Unknown",
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum LengthEncodedKind {
+    Integer,
+    String,
+}
+
+// Encoding for how long the next item is, which requires special handling.
 //
 // 00 	The next 6 bits represent the length
 // 01 	Read one additional byte. The combined 14 bits represent the length
@@ -194,7 +277,7 @@ pub fn load_db() -> Result<Rdb> {
 //     The uncompressed length is read from the stream using Length Encoding
 //     The next clen bytes are read from the stream
 //     Finally, these bytes are decompressed using LZF algorithm
-fn extract_value(byte: u8, file: &mut File) -> Result<String> {
+fn extract_value(byte: u8, file: &mut File, lek: LengthEncodedKind) -> Result<String> {
     let nullified = byte & 0b11000000;
 
     match nullified {
@@ -203,6 +286,9 @@ fn extract_value(byte: u8, file: &mut File) -> Result<String> {
             let length = remaining_bits as usize;
             if length == 0 {
                 return Ok(String::from("0"));
+            }
+            if lek == LengthEncodedKind::Integer {
+                return Ok(length.to_string());
             }
             let mut val = vec![0; length];
             file.read_exact(&mut val)?;
@@ -218,6 +304,9 @@ fn extract_value(byte: u8, file: &mut File) -> Result<String> {
             file.read_exact(&mut buf)?;
 
             let length = u16::from_le_bytes([remaining_bits, buf[0]]) as usize;
+            if lek == LengthEncodedKind::Integer {
+                return Ok(length.to_string());
+            }
             let mut val = vec![0; length];
             file.read_exact(&mut val)?;
             Ok(String::from_utf8(val)?)
@@ -226,6 +315,9 @@ fn extract_value(byte: u8, file: &mut File) -> Result<String> {
             let mut buf = [0; 4];
             file.read_exact(&mut buf)?;
             let length = u32::from_le_bytes(buf) as usize;
+            if lek == LengthEncodedKind::Integer {
+                return Ok(length.to_string());
+            }
             let mut val = vec![0; length];
             file.read_exact(&mut val)?;
             Ok(String::from_utf8(val)?)
@@ -251,7 +343,7 @@ fn extract_value(byte: u8, file: &mut File) -> Result<String> {
         0b11000011 => {
             let mut buf = [0; 1];
             file.read_exact(&mut buf)?;
-            let clen = extract_value(buf[0], file)?.parse::<usize>()?;
+            let clen = extract_value(buf[0], file, LengthEncodedKind::String)?.parse::<usize>()?;
             //let ulen = extract_value(buf[0], file)?.parse::<usize>()?;
             let mut compressed = vec![0; clen];
             file.read_exact(&mut compressed)?;
