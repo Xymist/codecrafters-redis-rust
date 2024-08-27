@@ -160,15 +160,12 @@ pub fn load_db() -> Result<Rdb> {
             if cfg!(debug_assertions) {
                 println!("Found data section");
             }
-            let data_type = extract_datatype(buf[0]);
-            if cfg!(debug_assertions) {
-                println!("Data type: {}", data_type);
-            }
-
-            file.read_exact(&mut buf)?;
 
             let expiry = match buf[0] {
                 0xFD => {
+                    if cfg!(debug_assertions) {
+                        println!("Found expiry section in milliseconds");
+                    }
                     let mut buf = [0; 4];
                     file.read_exact(&mut buf)?;
                     let expiry = u32::from_le_bytes(buf);
@@ -179,11 +176,14 @@ pub fn load_db() -> Result<Rdb> {
                     }
                 }
                 0xFC => {
+                    if cfg!(debug_assertions) {
+                        println!("Found expiry section in seconds");
+                    }
                     let mut buf = [0; 8];
                     file.read_exact(&mut buf)?;
                     let expiry = u64::from_le_bytes(buf);
                     if expiry == 0 {
-                        continue;
+                        None
                     } else {
                         Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(expiry))
                     }
@@ -191,12 +191,18 @@ pub fn load_db() -> Result<Rdb> {
                 _ => None,
             };
 
+            if buf[0] == 0xFC || buf[0] == 0xFD {
+                file.read_exact(&mut buf)?;
+            }
+
+            let data_type = extract_datatype(buf[0]);
+            if cfg!(debug_assertions) {
+                println!("Data type: {}", data_type);
+            }
+
             let key = {
-                let key_start_byte = if expiry.is_some() {
-                    let mut nbuf = [0; 1];
-                    file.read_exact(&mut nbuf)?;
-                    nbuf[0]
-                } else {
+                let key_start_byte = {
+                    file.read_exact(&mut buf)?;
                     buf[0]
                 };
 
@@ -208,7 +214,6 @@ pub fn load_db() -> Result<Rdb> {
             }
 
             let value = {
-                let mut buf = [0; 1];
                 file.read_exact(&mut buf)?;
                 let value = extract_value(buf[0], &mut file, LengthEncodedKind::String)?;
                 // TODO: not everything is a string, this needs correcting
