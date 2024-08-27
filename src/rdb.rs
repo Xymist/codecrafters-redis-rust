@@ -172,8 +172,9 @@ pub fn load_db() -> Result<Rdb> {
             db_data.data.insert(key, DBEntry::new(value, expiry));
         }
     }
-
-    println!("Loaded RDB file: {:#?}", db_data);
+    if cfg!(debug_assertions) {
+        println!("Loaded RDB file: {:#?}", db_data);
+    }
 
     Ok(db_data)
 }

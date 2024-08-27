@@ -65,6 +65,7 @@ pub enum Command {
         opts: SetOpts,
     },
     Get(String),
+    Keys(String),
     ConfigGet(String),
 }
 
@@ -106,6 +107,17 @@ impl Command {
                     None => Response::Null,
                 }
             }
+            Command::Keys(pattern) => {
+                let mut keys = Vec::new();
+                let mut guard = super::DB.get().unwrap().lock().unwrap();
+                for key in guard.data_mut().keys() {
+                    if key.contains(pattern) || pattern == "*" {
+                        keys.push(RESPValue::BulkString(key.clone()));
+                    }
+                }
+
+                Response::Echo(RESPValue::Array(keys))
+            }
         }
     }
 
@@ -123,6 +135,9 @@ impl Command {
             }
             Command::ConfigGet(key) => {
                 println!("CONFIG GET {}", key);
+            }
+            Command::Keys(pattern) => {
+                println!("KEYS {}", pattern);
             }
         }
     }
@@ -269,6 +284,14 @@ impl RESPValue {
                             };
 
                             Command::Get(key)
+                        }
+                        "KEYS" => {
+                            let pattern = match iter.next().unwrap() {
+                                RESPValue::BulkString(s) => s,
+                                _ => unimplemented!(),
+                            };
+
+                            Command::Keys(pattern)
                         }
                         "CONFIG" => {
                             let subcommand = match iter.next().unwrap() {
